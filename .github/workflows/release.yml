@@ -42,5 +42,5 @@ jobs:
         if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v4
         with:
-          name: DiskWidget-${{ steps.version.outputs.value }}
+          name: Healthbar-${{ steps.version.outputs.value }}
           path: build/*.zip

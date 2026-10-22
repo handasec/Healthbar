@@ -1,7 +1,8 @@
-# DiskWidget
+# Healthbar
 
-A small translucent desktop note for macOS showing disk, CPU, and memory at a glance.
-It floats above your windows, follows you across Spaces, and stays out of the way.
+Your Mac's vitals as three bars, on a translucent note that sits on your desktop.
+Disk, CPU, and memory at a glance — it floats above your windows, follows you across
+Spaces, and stays out of the way.
 
 - Native Cocoa, single Swift file, no dependencies and no frameworks to install
 - Reads straight from the kernel (`statfs`, `host_statistics`) — no shelling out, negligible CPU
@@ -24,17 +25,17 @@ Nothing is downloaded from the internet, so macOS raises no security prompts at 
 You need the Xcode Command Line Tools (`xcode-select --install`), nothing else.
 
 ```sh
-git clone https://github.com/handasec/DiskWidget.git
-cd DiskWidget
+git clone https://github.com/handasec/Healthbar.git
+cd Healthbar
 ./build.sh
-cp -R build/DiskWidget.app /Applications/
-open /Applications/DiskWidget.app
+cp -R build/Healthbar.app /Applications/
+open /Applications/Healthbar.app
 ```
 
 ### Option B — download a release
 
-Grab `DiskWidget-x.y.z-universal.zip` from the [Releases](../../releases) page, unzip it,
-and drag `DiskWidget.app` into `/Applications`.
+Grab `Healthbar-x.y.z-universal.zip` from the [Releases](../../releases) page, unzip it,
+and drag `Healthbar.app` into `/Applications`.
 
 This app is **not notarized by Apple**, so macOS will refuse to open it the first time
 and say it cannot be verified. That is expected for an unsigned app from the internet,
@@ -43,13 +44,13 @@ not a sign that anything is wrong with it. To get past it, do one of:
 **Clear the download flag** (fastest):
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/DiskWidget.app
-open /Applications/DiskWidget.app
+xattr -dr com.apple.quarantine /Applications/Healthbar.app
+open /Applications/Healthbar.app
 ```
 
 **Or approve it in System Settings:** try to open the app, then go to
 **System Settings → Privacy & Security**, scroll to the Security section, and click
-**Open Anyway** next to the DiskWidget message. On recent macOS versions this is the only
+**Open Anyway** next to the Healthbar message. On recent macOS versions this is the only
 route through the UI — Control-clicking the app and choosing Open no longer bypasses the check.
 
 ## Using it
@@ -58,7 +59,7 @@ route through the UI — Control-clicking the app and choosing Open no longer by
 - **Quit it** — hover over the note and click the ✕, or right-click → Quit.
 - **Reset position** — right-click → Reset Position puts it back in the top-left corner.
 - **Start at login** — System Settings → General → Login Items & Extensions → **＋** under
-  "Open at Login" → choose DiskWidget.
+  "Open at Login" → choose Healthbar.
 
 ## Building
 
@@ -67,7 +68,7 @@ route through the UI — Control-clicking the app and choosing Open no longer by
 VERSION=1.2.0 ./build.sh      # stamp a version into the bundle and zip
 ```
 
-The build produces both `build/DiskWidget.app` and a zip ready to attach to a release.
+The build produces both `build/Healthbar.app` and a zip ready to attach to a release.
 `main.swift` is the whole program — edit the `Glass` enum at the top to change colors,
 `StickyNoteView.size` to resize, or `tick` in `AppDelegate` to change the refresh rate.
 
@@ -93,11 +94,11 @@ The warning in Option B goes away only with an Apple Developer Program membershi
    ```
 3. Notarize the zip and staple the ticket to the app:
    ```sh
-   xcrun notarytool submit build/DiskWidget-1.0.0-universal.zip \
+   xcrun notarytool submit build/Healthbar-1.0.0-universal.zip \
        --apple-id you@example.com --team-id TEAMID --password APP_SPECIFIC_PASSWORD \
        --wait
-   xcrun stapler staple build/DiskWidget.app
-   ditto -c -k --keepParent build/DiskWidget.app build/DiskWidget-1.0.0-universal.zip
+   xcrun stapler staple build/Healthbar.app
+   ditto -c -k --keepParent build/Healthbar.app build/Healthbar-1.0.0-universal.zip
    ```
 
 The re-zip after stapling matters — the ticket is attached to the `.app`, and without

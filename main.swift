@@ -385,7 +385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let cpuSampler = CPUSampler()
     private let margin: CGFloat = 16
-    private let autosaveName = NSWindow.FrameAutosaveName("DiskWidgetFrame")
+    private let autosaveName = NSWindow.FrameAutosaveName("HealthbarFrame")
 
     /// CPU wants frequent sampling; the disk only changes slowly.
     private let tick: TimeInterval = 2
