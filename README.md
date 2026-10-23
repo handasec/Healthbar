@@ -56,6 +56,9 @@ route through the UI — Control-clicking the app and choosing Open no longer by
 ## Using it
 
 - **Move it** — drag the note anywhere. Its position is remembered between launches.
+- **Resize it** — right-click → Size → Small, Medium, or Large. Everything scales
+  together — text, bars, and padding — and the choice is remembered between launches.
+  The note grows from its top-left corner, so it stays where you put it.
 - **Quit it** — hover over the note and click the ✕, or right-click → Quit.
 - **Reset position** — right-click → Reset Position puts it back in the top-left corner.
 - **Start at login** — System Settings → General → Login Items & Extensions → **＋** under
@@ -70,7 +73,8 @@ VERSION=1.2.0 ./build.sh      # stamp a version into the bundle and zip
 
 The build produces both `build/Healthbar.app` and a zip ready to attach to a release.
 `main.swift` is the whole program — edit the `Glass` enum at the top to change colors,
-`StickyNoteView.size` to resize, or `tick` in `AppDelegate` to change the refresh rate.
+`StickyNoteView.baseSize` for the medium dimensions, the factors in `NoteScale` for the
+size steps, or `tick` in `AppDelegate` to change the refresh rate.
 
 ## Releasing
 

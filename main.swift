@@ -44,6 +44,41 @@ enum Glass {
     }
 }
 
+// MARK: - Size
+
+/// Three fixed steps rather than a free drag: the note is a glanceable widget,
+/// and arbitrary sizes mostly produce awkward ones. The factor multiplies every
+/// dimension — bounds, fonts, padding, bars — so the proportions never shift.
+enum NoteScale: String, CaseIterable {
+    case small, medium, large
+
+    static let defaultsKey = "NoteScale"
+
+    var factor: CGFloat {
+        switch self {
+        case .small: return 0.82
+        case .medium: return 1.00
+        case .large: return 1.25
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .small: return "Small"
+        case .medium: return "Medium"
+        case .large: return "Large"
+        }
+    }
+
+    static var current: NoteScale {
+        get {
+            NoteScale(rawValue: UserDefaults.standard.string(forKey: defaultsKey) ?? "")
+                ?? .medium
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: defaultsKey) }
+    }
+}
+
 // MARK: - Readings
 
 struct Reading {
@@ -141,22 +176,25 @@ enum Memory {
 // MARK: - One labelled meter
 
 final class MetricRow: NSView {
-    static let height: CGFloat = 32
+    static let baseHeight: CGFloat = 32
 
     private let nameLabel = NSTextField(labelWithString: "")
     private let valueLabel = NSTextField(labelWithString: "—")
-    private let barHeight: CGFloat = 5
+    private let scale: CGFloat
+    private let barHeight: CGFloat
     private var fraction: Double = 0
 
-    init(name: String) {
+    init(name: String, scale: CGFloat) {
+        self.scale = scale
+        self.barHeight = (5 * scale).rounded()
         super.init(frame: .zero)
 
         nameLabel.attributedStringValue = NSAttributedString(
             string: name,
             attributes: [
-                .font: NSFont.systemFont(ofSize: 9.5, weight: .bold),
+                .font: NSFont.systemFont(ofSize: 9.5 * scale, weight: .bold),
                 .foregroundColor: Glass.label,
-                .kern: 1.2,
+                .kern: 1.2 * scale,
                 .shadow: Glass.textShadow,
             ])
 
@@ -174,9 +212,9 @@ final class MetricRow: NSView {
             valueLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
             valueLabel.firstBaselineAnchor.constraint(equalTo: nameLabel.firstBaselineAnchor),
             valueLabel.leadingAnchor.constraint(greaterThanOrEqualTo: nameLabel.trailingAnchor,
-                                                constant: 6),
+                                                constant: 6 * scale),
 
-            heightAnchor.constraint(equalToConstant: MetricRow.height),
+            heightAnchor.constraint(equalToConstant: (MetricRow.baseHeight * scale).rounded()),
         ])
     }
 
@@ -192,7 +230,7 @@ final class MetricRow: NSView {
         valueLabel.attributedStringValue = NSAttributedString(
             string: reading?.text ?? "—",
             attributes: [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .semibold),
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 11.5 * scale, weight: .semibold),
                 .foregroundColor: Glass.value,
                 .shadow: Glass.textShadow,
                 .paragraphStyle: rightAligned,
@@ -233,21 +271,35 @@ extension NSShadow {
 // MARK: - The note
 
 final class StickyNoteView: NSView {
-    static let size = NSSize(width: 212, height: 164)
+    static let baseSize = NSSize(width: 212, height: 164)
 
-    private let padding: CGFloat = 16
+    static func size(for scale: NoteScale) -> NSSize {
+        NSSize(width: (baseSize.width * scale.factor).rounded(),
+               height: (baseSize.height * scale.factor).rounded())
+    }
+
+    private let scale: CGFloat
+    private let padding: CGFloat
+    private let corner: CGFloat
 
     private let titleLabel = NSTextField(labelWithString: "")
     private let closeButton = NSButton()
 
-    let disk = MetricRow(name: "DISK")
-    let cpu = MetricRow(name: "CPU")
-    let memory = MetricRow(name: "MEMORY")
+    let disk: MetricRow
+    let cpu: MetricRow
+    let memory: MetricRow
 
     private var hovering = false
     private var tracking: NSTrackingArea?
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, scale: NoteScale) {
+        let factor = scale.factor
+        self.scale = factor
+        self.padding = (16 * factor).rounded()
+        self.corner = (Glass.corner * factor).rounded()
+        self.disk = MetricRow(name: "DISK", scale: factor)
+        self.cpu = MetricRow(name: "CPU", scale: factor)
+        self.memory = MetricRow(name: "MEMORY", scale: factor)
         super.init(frame: frame)
         wantsLayer = true
         build()
@@ -259,9 +311,9 @@ final class StickyNoteView: NSView {
         titleLabel.attributedStringValue = NSAttributedString(
             string: "SYSTEM",
             attributes: [
-                .font: NSFont.systemFont(ofSize: 10.5, weight: .heavy),
+                .font: NSFont.systemFont(ofSize: 10.5 * scale, weight: .heavy),
                 .foregroundColor: Glass.heading,
-                .kern: 1.8,
+                .kern: 1.8 * scale,
                 .shadow: Glass.textShadow,
             ])
 
@@ -269,7 +321,7 @@ final class StickyNoteView: NSView {
         closeButton.attributedTitle = NSAttributedString(
             string: "✕",
             attributes: [
-                .font: NSFont.systemFont(ofSize: 10, weight: .bold),
+                .font: NSFont.systemFont(ofSize: 10 * scale, weight: .bold),
                 .foregroundColor: NSColor(white: 1, alpha: 0.6),
             ])
         closeButton.target = NSApp
@@ -281,7 +333,7 @@ final class StickyNoteView: NSView {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.distribution = .fillEqually
-        stack.spacing = 6
+        stack.spacing = (6 * scale).rounded()
 
         for v in [titleLabel, closeButton, stack] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
@@ -290,17 +342,17 @@ final class StickyNoteView: NSView {
 
         NSLayoutConstraint.activate([
             titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: padding),
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 13),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 13 * scale),
 
-            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            closeButton.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            closeButton.widthAnchor.constraint(equalToConstant: 16),
-            closeButton.heightAnchor.constraint(equalToConstant: 16),
+            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8 * scale),
+            closeButton.topAnchor.constraint(equalTo: topAnchor, constant: 8 * scale),
+            closeButton.widthAnchor.constraint(equalToConstant: (16 * scale).rounded()),
+            closeButton.heightAnchor.constraint(equalToConstant: (16 * scale).rounded()),
 
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: padding),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -padding),
-            stack.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 10),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 10 * scale),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12 * scale),
         ])
 
         for row in [disk, cpu, memory] {
@@ -311,7 +363,6 @@ final class StickyNoteView: NSView {
     // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        let corner = Glass.corner
         let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
                                  xRadius: corner, yRadius: corner)
 
@@ -361,6 +412,22 @@ final class StickyNoteView: NSView {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
+
+        let sizeItem = NSMenuItem(title: "Size", action: nil, keyEquivalent: "")
+        let sizeMenu = NSMenu()
+        let active = NoteScale.current
+        for option in NoteScale.allCases {
+            let item = NSMenuItem(title: option.title,
+                                  action: #selector(AppDelegate.changeSize(_:)),
+                                  keyEquivalent: "")
+            item.representedObject = option.rawValue
+            item.state = option == active ? .on : .off
+            sizeMenu.addItem(item)
+        }
+        sizeItem.submenu = sizeMenu
+        menu.addItem(sizeItem)
+        menu.addItem(.separator())
+
         menu.addItem(withTitle: "Reset Position",
                      action: #selector(AppDelegate.resetPosition), keyEquivalent: "")
         menu.addItem(.separator())
@@ -392,7 +459,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var ticksUntilDiskRead = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let size = StickyNoteView.size
+        let size = StickyNoteView.size(for: NoteScale.current)
         window = NoteWindow(contentRect: NSRect(origin: .zero, size: size),
                             styleMask: .borderless,
                             backing: .buffered,
@@ -407,7 +474,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // No blur view: the window itself is transparent, so the note is a sheet of
         // tinted glass over your desktop rather than an opaque panel sitting on it.
-        note = StickyNoteView(frame: NSRect(origin: .zero, size: size))
+        note = StickyNoteView(frame: NSRect(origin: .zero, size: size),
+                              scale: NoteScale.current)
         note.autoresizingMask = [.width, .height]
         window.contentView = note
 
@@ -443,10 +511,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.saveFrame(usingName: autosaveName)
     }
 
+    @objc func changeSize(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let scale = NoteScale(rawValue: raw),
+              scale != NoteScale.current else { return }
+        NoteScale.current = scale
+
+        // Every metric is baked in at init, so the note is rebuilt rather than
+        // relaid out — cheaper to reason about than mutating a dozen constraints.
+        let size = StickyNoteView.size(for: scale)
+        let old = window.frame
+        note = StickyNoteView(frame: NSRect(origin: .zero, size: size), scale: scale)
+        note.autoresizingMask = [.width, .height]
+        window.contentView = note
+
+        // Resize from the top-left corner, so the note stays where you put it.
+        window.setFrame(NSRect(x: old.minX, y: old.maxY - size.height,
+                               width: size.width, height: size.height),
+                        display: true)
+        window.saveFrame(usingName: autosaveName)
+
+        // The fresh rows are empty; fill them now instead of waiting for a tick.
+        // No re-priming of the sampler — refresh consumes the delta already accrued.
+        ticksUntilDiskRead = 0
+        refresh()
+    }
+
     private func moveToTopLeft() {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         let visible = screen.visibleFrame
-        let size = StickyNoteView.size
+        let size = StickyNoteView.size(for: NoteScale.current)
         window.setFrameOrigin(NSPoint(x: visible.minX + margin,
                                       y: visible.maxY - size.height - margin))
     }
