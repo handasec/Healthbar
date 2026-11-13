@@ -11,15 +11,18 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD="$DIR/build"
 APP="$BUILD/Healthbar.app"
 
-VERSION="${VERSION:-1.0.0}"
-# Two OS versions back, so the release covers current and N-1 comfortably.
+VERSION="${VERSION:-1.1.0}"
+# The oldest macOS the app runs on. It uses no API newer than this, so the one
+# binary covers everything from Ventura to the current release.
 DEPLOYMENT_TARGET="13.0"
 
 rm -rf "$BUILD"
 mkdir -p "$APP/Contents/MacOS"
 
 for arch in arm64 x86_64; do
-    swiftc -O -framework Cocoa \
+    # Pinned to the Swift 5 language mode so a newer compiler's stricter
+    # defaults cannot turn this into a build failure.
+    swiftc -O -swift-version 5 -framework Cocoa \
         -target "${arch}-apple-macos${DEPLOYMENT_TARGET}" \
         -o "$BUILD/Healthbar-${arch}" \
         "$DIR/main.swift"

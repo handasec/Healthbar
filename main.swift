@@ -46,12 +46,13 @@ enum Glass {
 
 // MARK: - Size
 
-/// Three fixed steps rather than a free drag: the note is a glanceable widget,
-/// and arbitrary sizes mostly produce awkward ones. The factor multiplies every
+/// Presets for the right-click menu. The note can also be dragged to any size in
+/// between by its bottom-right corner; either way one factor multiplies every
 /// dimension — bounds, fonts, padding, bars — so the proportions never shift.
 enum NoteScale: String, CaseIterable {
     case small, medium, large
 
+    /// Where versions before free resizing stored the chosen preset.
     static let defaultsKey = "NoteScale"
 
     var factor: CGFloat {
@@ -68,14 +69,6 @@ enum NoteScale: String, CaseIterable {
         case .medium: return "Medium"
         case .large: return "Large"
         }
-    }
-
-    static var current: NoteScale {
-        get {
-            NoteScale(rawValue: UserDefaults.standard.string(forKey: defaultsKey) ?? "")
-                ?? .medium
-        }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: defaultsKey) }
     }
 }
 
@@ -173,196 +166,90 @@ enum Memory {
     }
 }
 
-// MARK: - One labelled meter
-
-final class MetricRow: NSView {
-    static let baseHeight: CGFloat = 32
-
-    private let nameLabel = NSTextField(labelWithString: "")
-    private let valueLabel = NSTextField(labelWithString: "—")
-    private let scale: CGFloat
-    private let barHeight: CGFloat
-    private var fraction: Double = 0
-
-    init(name: String, scale: CGFloat) {
-        self.scale = scale
-        self.barHeight = (5 * scale).rounded()
-        super.init(frame: .zero)
-
-        nameLabel.attributedStringValue = NSAttributedString(
-            string: name,
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 9.5 * scale, weight: .bold),
-                .foregroundColor: Glass.label,
-                .kern: 1.2 * scale,
-                .shadow: Glass.textShadow,
-            ])
-
-        valueLabel.alignment = .right
-
-        for v in [nameLabel, valueLabel] {
-            v.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(v)
-        }
-
-        NSLayoutConstraint.activate([
-            nameLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
-            nameLabel.topAnchor.constraint(equalTo: topAnchor, constant: 1),
-
-            valueLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
-            valueLabel.firstBaselineAnchor.constraint(equalTo: nameLabel.firstBaselineAnchor),
-            valueLabel.leadingAnchor.constraint(greaterThanOrEqualTo: nameLabel.trailingAnchor,
-                                                constant: 6 * scale),
-
-            heightAnchor.constraint(equalToConstant: (MetricRow.baseHeight * scale).rounded()),
-        ])
-    }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    func apply(_ reading: Reading?) {
-        fraction = reading?.fraction ?? 0
-        // An attributed string carries its own alignment, so it has to be set here
-        // rather than once on the field.
-        let rightAligned = NSMutableParagraphStyle()
-        rightAligned.alignment = .right
-
-        valueLabel.attributedStringValue = NSAttributedString(
-            string: reading?.text ?? "—",
-            attributes: [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 11.5 * scale, weight: .semibold),
-                .foregroundColor: Glass.value,
-                .shadow: Glass.textShadow,
-                .paragraphStyle: rightAligned,
-            ])
-        needsDisplay = true
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let radius = barHeight / 2
-        let track = NSRect(x: 0, y: 0, width: bounds.width, height: barHeight)
-
-        Glass.track.setFill()
-        NSBezierPath(roundedRect: track, xRadius: radius, yRadius: radius).fill()
-
-        let color = Glass.meter(for: fraction)
-        let width = max(barHeight, track.width * CGFloat(min(max(fraction, 0), 1)))
-        let fill = NSRect(x: 0, y: 0, width: width, height: barHeight)
-
-        // A soft glow under the bar so it reads clearly against a busy wallpaper.
-        NSGraphicsContext.saveGraphicsState()
-        NSShadow.glow(color: color).set()
-        color.setFill()
-        NSBezierPath(roundedRect: fill, xRadius: radius, yRadius: radius).fill()
-        NSGraphicsContext.restoreGraphicsState()
-    }
-}
-
-extension NSShadow {
-    static func glow(color: NSColor) -> NSShadow {
-        let shadow = NSShadow()
-        shadow.shadowColor = color.withAlphaComponent(0.55)
-        shadow.shadowBlurRadius = 5
-        shadow.shadowOffset = .zero
-        return shadow
-    }
-}
-
 // MARK: - The note
 
+/// The whole note is one view that draws itself. There are no subviews, so there
+/// is nothing to swallow a click: every mouse-down lands here and is routed to
+/// exactly one of move, resize, or close. Every dimension is derived from the
+/// view's current width, so resizing the window is all it takes to rescale.
 final class StickyNoteView: NSView {
     static let baseSize = NSSize(width: 212, height: 164)
+    static let minScale: CGFloat = 0.6
+    static let maxScale: CGFloat = 3.0
 
-    static func size(for scale: NoteScale) -> NSSize {
-        NSSize(width: (baseSize.width * scale.factor).rounded(),
-               height: (baseSize.height * scale.factor).rounded())
+    static func clamp(_ scale: CGFloat) -> CGFloat {
+        guard scale.isFinite else { return 1 }
+        return min(max(scale, minScale), maxScale)
     }
 
-    private let scale: CGFloat
-    private let padding: CGFloat
-    private let corner: CGFloat
+    /// The aspect ratio is locked, so a size is fully described by its scale.
+    static func size(for scale: CGFloat) -> NSSize {
+        let s = clamp(scale)
+        return NSSize(width: (baseSize.width * s).rounded(),
+                      height: (baseSize.height * s).rounded())
+    }
 
-    private let titleLabel = NSTextField(labelWithString: "")
-    private let closeButton = NSButton()
+    var disk: Reading? { didSet { redraw() } }
+    var cpu: Reading? { didSet { redraw() } }
+    var memory: Reading? { didSet { redraw() } }
 
-    let disk: MetricRow
-    let cpu: MetricRow
-    let memory: MetricRow
+    /// Called once a move or resize gesture finishes, so the app can persist it.
+    var onGestureEnded: (() -> Void)?
 
+    private enum Gesture {
+        case move(mouse: NSPoint, origin: NSPoint)
+        case resize(mouse: NSPoint, frame: NSRect)
+        case close
+    }
+
+    private var gesture: Gesture?
     private var hovering = false
-    private var tracking: NSTrackingArea?
+    private var overGrip = false
+    private var overClose = false
 
-    init(frame: NSRect, scale: NoteScale) {
-        let factor = scale.factor
-        self.scale = factor
-        self.padding = (16 * factor).rounded()
-        self.corner = (Glass.corner * factor).rounded()
-        self.disk = MetricRow(name: "DISK", scale: factor)
-        self.cpu = MetricRow(name: "CPU", scale: factor)
-        self.memory = MetricRow(name: "MEMORY", scale: factor)
+    private var scale: CGFloat { bounds.width / StickyNoteView.baseSize.width }
+
+    override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        build()
+        layerContentsRedrawPolicy = .duringViewResize
+
+        // .inVisibleRect keeps the area matched to the view as it resizes;
+        // .activeAlways because this app is never the active one.
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil))
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    private func build() {
-        titleLabel.attributedStringValue = NSAttributedString(
-            string: "SYSTEM",
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 10.5 * scale, weight: .heavy),
-                .foregroundColor: Glass.heading,
-                .kern: 1.8 * scale,
-                .shadow: Glass.textShadow,
-            ])
+    private func redraw() {
+        needsDisplay = true
+        // The window shadow is cut from the drawn content; without this a
+        // transparent window keeps the outline of whatever it showed before.
+        window?.invalidateShadow()
+    }
 
-        closeButton.isBordered = false
-        closeButton.attributedTitle = NSAttributedString(
-            string: "✕",
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 10 * scale, weight: .bold),
-                .foregroundColor: NSColor(white: 1, alpha: 0.6),
-            ])
-        closeButton.target = NSApp
-        closeButton.action = #selector(NSApplication.terminate(_:))
-        closeButton.alphaValue = 0
-        closeButton.toolTip = "Quit"
+    // MARK: Hit zones
 
-        let stack = NSStackView(views: [disk, cpu, memory])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.distribution = .fillEqually
-        stack.spacing = (6 * scale).rounded()
+    private var closeZone: NSRect {
+        let side = 24 * scale
+        return NSRect(x: bounds.maxX - side - 3 * scale, y: bounds.maxY - side - 3 * scale,
+                      width: side, height: side)
+    }
 
-        for v in [titleLabel, closeButton, stack] as [NSView] {
-            v.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(v)
-        }
-
-        NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: padding),
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 13 * scale),
-
-            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8 * scale),
-            closeButton.topAnchor.constraint(equalTo: topAnchor, constant: 8 * scale),
-            closeButton.widthAnchor.constraint(equalToConstant: (16 * scale).rounded()),
-            closeButton.heightAnchor.constraint(equalToConstant: (16 * scale).rounded()),
-
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: padding),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -padding),
-            stack.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 10 * scale),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12 * scale),
-        ])
-
-        for row in [disk, cpu, memory] {
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        }
+    private var resizeZone: NSRect {
+        let side = max(20, 24 * scale)
+        return NSRect(x: bounds.maxX - side, y: bounds.minY, width: side, height: side)
     }
 
     // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
+        let s = scale
+        let corner = Glass.corner * s
         let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
                                  xRadius: corner, yRadius: corner)
 
@@ -383,45 +270,232 @@ final class StickyNoteView: NSView {
         Glass.border.setStroke()
         shape.lineWidth = 1
         shape.stroke()
+
+        let padding = 16 * s
+
+        let title = NSAttributedString(
+            string: "SYSTEM",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 10.5 * s, weight: .heavy),
+                .foregroundColor: Glass.heading,
+                .kern: 1.8 * s,
+                .shadow: Glass.textShadow,
+            ])
+        title.draw(at: NSPoint(x: padding,
+                               y: bounds.maxY - 14 * s - title.size().height))
+
+        // Three rows of 32 with 8 between them, starting 40 below the top edge.
+        let rows: [(String, Reading?)] = [("DISK", disk), ("CPU", cpu), ("MEMORY", memory)]
+        for (index, row) in rows.enumerated() {
+            let rowTop = bounds.maxY - (40 + CGFloat(index) * 40) * s
+            drawRow(name: row.0, reading: row.1, top: rowTop, padding: padding, scale: s)
+        }
+
+        if hovering || gesture != nil {
+            drawCloseMark(scale: s)
+            drawGrip(scale: s)
+        }
+    }
+
+    private func drawRow(name: String, reading: Reading?, top: CGFloat,
+                         padding: CGFloat, scale s: CGFloat) {
+        let nameFont = NSFont.systemFont(ofSize: 9.5 * s, weight: .bold)
+        let valueFont = NSFont.monospacedDigitSystemFont(ofSize: 11.5 * s, weight: .semibold)
+
+        let nameText = NSAttributedString(
+            string: name,
+            attributes: [
+                .font: nameFont,
+                .foregroundColor: Glass.label,
+                .kern: 1.2 * s,
+                .shadow: Glass.textShadow,
+            ])
+        let valueText = NSAttributedString(
+            string: reading?.text ?? "—",
+            attributes: [
+                .font: valueFont,
+                .foregroundColor: Glass.value,
+                .shadow: Glass.textShadow,
+            ])
+
+        // Both strings share a baseline; descender is negative, so subtracting
+        // it lifts from the bottom of the line box up to the baseline.
+        let nameY = top - 1 * s - nameText.size().height
+        let baseline = nameY - nameFont.descender
+        nameText.draw(at: NSPoint(x: padding, y: nameY))
+        valueText.draw(at: NSPoint(x: bounds.maxX - padding - valueText.size().width,
+                                   y: baseline + valueFont.descender))
+
+        let barHeight = 5 * s
+        let radius = barHeight / 2
+        let track = NSRect(x: padding, y: top - 32 * s,
+                           width: bounds.width - 2 * padding, height: barHeight)
+
+        Glass.track.setFill()
+        NSBezierPath(roundedRect: track, xRadius: radius, yRadius: radius).fill()
+
+        let fraction = min(max(reading?.fraction ?? 0, 0), 1)
+        let color = Glass.meter(for: fraction)
+        var fill = track
+        fill.size.width = max(barHeight, track.width * CGFloat(fraction))
+
+        // A soft glow under the bar so it reads clearly against a busy wallpaper.
+        NSGraphicsContext.saveGraphicsState()
+        NSShadow.glow(color: color, radius: 5 * s).set()
+        color.setFill()
+        NSBezierPath(roundedRect: fill, xRadius: radius, yRadius: radius).fill()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func drawCloseMark(scale s: CGFloat) {
+        let zone = closeZone
+        let center = NSPoint(x: zone.midX, y: zone.midY)
+        let arm = 3.5 * s
+
+        let mark = NSBezierPath()
+        mark.move(to: NSPoint(x: center.x - arm, y: center.y - arm))
+        mark.line(to: NSPoint(x: center.x + arm, y: center.y + arm))
+        mark.move(to: NSPoint(x: center.x - arm, y: center.y + arm))
+        mark.line(to: NSPoint(x: center.x + arm, y: center.y - arm))
+        mark.lineWidth = 1.5 * s
+        mark.lineCapStyle = .round
+        NSColor(white: 1, alpha: overClose ? 1.0 : 0.6).setStroke()
+        mark.stroke()
+    }
+
+    /// Two diagonal ticks in the bottom-right corner: the handle to drag to resize.
+    private func drawGrip(scale s: CGFloat) {
+        let unit = max(s, 0.85)   // keep the handle visible on the smallest note
+        let cornerX = bounds.maxX
+        let cornerY = bounds.minY
+
+        let grip = NSBezierPath()
+        for reach in [10.0, 14.5] as [CGFloat] {
+            grip.move(to: NSPoint(x: cornerX - reach * unit, y: cornerY + 5.5 * unit))
+            grip.line(to: NSPoint(x: cornerX - 5.5 * unit, y: cornerY + reach * unit))
+        }
+        grip.lineWidth = 1.5 * unit
+        grip.lineCapStyle = .round
+        NSColor(white: 1, alpha: overGrip ? 1.0 : 0.5).setStroke()
+        grip.stroke()
     }
 
     // MARK: Hover
 
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(rect: bounds,
-                                  options: [.mouseEnteredAndExited, .activeAlways],
-                                  owner: self)
-        addTrackingArea(area)
-        tracking = area
+    override func mouseEntered(with event: NSEvent) { updateHover(with: event) }
+    override func mouseMoved(with event: NSEvent) { updateHover(with: event) }
+
+    override func mouseExited(with event: NSEvent) {
+        // A fast drag can outrun the window for a frame; that is not a real exit.
+        guard gesture == nil else { return }
+        setHover(inside: false, grip: false, close: false)
     }
 
-    override func mouseEntered(with event: NSEvent) { setHovering(true) }
-    override func mouseExited(with event: NSEvent) { setHovering(false) }
+    private func updateHover(with event: NSEvent) {
+        guard gesture == nil else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        setHover(inside: bounds.contains(point),
+                 grip: resizeZone.contains(point),
+                 close: closeZone.contains(point))
+    }
 
-    private func setHovering(_ value: Bool) {
-        guard hovering != value else { return }
-        hovering = value
-        needsDisplay = true   // the backdrop firms up while hovered
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.15
-            closeButton.animator().alphaValue = value ? 1 : 0
+    private func setHover(inside: Bool, grip: Bool, close: Bool) {
+        guard hovering != inside || overGrip != grip || overClose != close else { return }
+        hovering = inside
+        overGrip = grip
+        overClose = close
+        redraw()
+    }
+
+    // MARK: Move, resize, close
+
+    /// Act on the very first click, even though the app is never frontmost.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// Dragging is handled below, explicitly, instead of by the window server.
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window = window else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        // Screen coordinates, not window ones: the window itself moves during
+        // the gesture, so anything measured relative to it would jitter.
+        let mouse = NSEvent.mouseLocation
+
+        if closeZone.contains(point) {
+            gesture = .close
+        } else if resizeZone.contains(point) {
+            gesture = .resize(mouse: mouse, frame: window.frame)
+            overGrip = true
+        } else {
+            gesture = .move(mouse: mouse, origin: window.frame.origin)
+        }
+        hovering = true
+        redraw()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window = window, let gesture = gesture else { return }
+        let mouse = NSEvent.mouseLocation
+
+        switch gesture {
+        case .move(let start, let origin):
+            window.setFrameOrigin(NSPoint(x: (origin.x + mouse.x - start.x).rounded(),
+                                          y: (origin.y + mouse.y - start.y).rounded()))
+
+        case .resize(let start, let frame):
+            // The pointer moves freely but the note keeps its proportions, so
+            // take the width implied by each axis and split the difference.
+            let base = StickyNoteView.baseSize
+            let byWidth = frame.width + (mouse.x - start.x)
+            let byHeight = (frame.height - (mouse.y - start.y)) * (base.width / base.height)
+            let size = StickyNoteView.size(for: ((byWidth + byHeight) / 2) / base.width)
+
+            // The top-left corner stays pinned; the dragged corner follows.
+            window.setFrame(NSRect(x: frame.minX, y: frame.maxY - size.height,
+                                   width: size.width, height: size.height),
+                            display: true)
+            redraw()
+
+        case .close:
+            break
         }
     }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let finished = gesture else { return }
+        gesture = nil
+        let point = convert(event.locationInWindow, from: nil)
+
+        if case .close = finished {
+            // Like any button: releasing outside it cancels.
+            if closeZone.contains(point) {
+                NSApp.terminate(nil)
+                return
+            }
+        } else {
+            onGestureEnded?()
+        }
+
+        hovering = bounds.contains(point)
+        overGrip = resizeZone.contains(point)
+        overClose = closeZone.contains(point)
+        redraw()
+    }
+
+    // MARK: Menu
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
 
         let sizeItem = NSMenuItem(title: "Size", action: nil, keyEquivalent: "")
         let sizeMenu = NSMenu()
-        let active = NoteScale.current
         for option in NoteScale.allCases {
             let item = NSMenuItem(title: option.title,
                                   action: #selector(AppDelegate.changeSize(_:)),
                                   keyEquivalent: "")
             item.representedObject = option.rawValue
-            item.state = option == active ? .on : .off
+            item.state = abs(option.factor - scale) < 0.01 ? .on : .off
             sizeMenu.addItem(item)
         }
         sizeItem.submenu = sizeMenu
@@ -434,6 +508,16 @@ final class StickyNoteView: NSView {
         menu.addItem(withTitle: "Quit",
                      action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         return menu
+    }
+}
+
+extension NSShadow {
+    static func glow(color: NSColor, radius: CGFloat) -> NSShadow {
+        let shadow = NSShadow()
+        shadow.shadowColor = color.withAlphaComponent(0.55)
+        shadow.shadowBlurRadius = radius
+        shadow.shadowOffset = .zero
+        return shadow
     }
 }
 
@@ -453,13 +537,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let cpuSampler = CPUSampler()
     private let margin: CGFloat = 16
     private let autosaveName = NSWindow.FrameAutosaveName("HealthbarFrame")
+    private let scaleKey = "NoteScaleFactor"
 
     /// CPU wants frequent sampling; the disk only changes slowly.
     private let tick: TimeInterval = 2
     private var ticksUntilDiskRead = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let size = StickyNoteView.size(for: NoteScale.current)
+        let size = StickyNoteView.size(for: storedScale())
         window = NoteWindow(contentRect: NSRect(origin: .zero, size: size),
                             styleMask: .borderless,
                             backing: .buffered,
@@ -468,21 +553,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.backgroundColor = .clear
         window.hasShadow = true
         window.level = .floating
-        window.isMovableByWindowBackground = true
+        // The note moves and resizes itself (see StickyNoteView); letting the
+        // window server drag it as well would have the two fighting.
+        window.isMovableByWindowBackground = false
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         window.appearance = NSAppearance(named: .darkAqua)
 
         // No blur view: the window itself is transparent, so the note is a sheet of
         // tinted glass over your desktop rather than an opaque panel sitting on it.
-        note = StickyNoteView(frame: NSRect(origin: .zero, size: size),
-                              scale: NoteScale.current)
+        note = StickyNoteView(frame: NSRect(origin: .zero, size: size))
         note.autoresizingMask = [.width, .height]
+        note.onGestureEnded = { [weak self] in
+            self?.keepOnScreen()
+            self?.persist()
+        }
         window.contentView = note
 
         // Restore where it was last dragged; otherwise park it top-left.
         if window.setFrameUsingName(autosaveName) {
-            // The saved frame may be from an older, differently sized note —
-            // keep its top-left corner and impose the current size.
+            // A borderless window only gets its origin back, and the saved frame
+            // may be from a differently sized note — keep its top-left corner
+            // and impose the size we actually want.
             let saved = window.frame
             window.setFrame(NSRect(x: saved.minX, y: saved.maxY - size.height,
                                    width: size.width, height: size.height),
@@ -490,70 +581,121 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             moveToTopLeft()
         }
-        window.setFrameAutosaveName(autosaveName)
+        // The saved spot may be on a display that is no longer attached.
+        keepOnScreen()
         window.orderFrontRegardless()
 
         // Prime the CPU sampler so the first visible value is a real delta.
         _ = cpuSampler.read()
         refresh()
 
-        timer = Timer.scheduledTimer(withTimeInterval: tick, repeats: true) { [weak self] _ in
-            self?.refresh()
-        }
+        // .common so the bars keep updating while a menu is open or a drag is live.
+        let timer = Timer(timeInterval: tick, target: self, selector: #selector(refresh),
+                          userInfo: nil, repeats: true)
+        timer.tolerance = 0.2
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
 
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(refresh),
             name: NSWorkspace.didWakeNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(screensChanged),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    }
+
+    // MARK: Size and position
+
+    /// The free-form scale if one was saved, else the Small/Medium/Large choice
+    /// an older version stored, else medium.
+    private func storedScale() -> CGFloat {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: scaleKey) != nil {
+            return StickyNoteView.clamp(CGFloat(defaults.double(forKey: scaleKey)))
+        }
+        if let legacy = NoteScale(rawValue: defaults.string(forKey: NoteScale.defaultsKey) ?? "") {
+            return legacy.factor
+        }
+        return NoteScale.medium.factor
+    }
+
+    private func persist() {
+        let scale = window.frame.width / StickyNoteView.baseSize.width
+        UserDefaults.standard.set(Double(scale), forKey: scaleKey)
+        window.saveFrame(usingName: autosaveName)
     }
 
     @objc func resetPosition() {
         moveToTopLeft()
-        window.saveFrame(usingName: autosaveName)
+        persist()
     }
 
     @objc func changeSize(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
-              let scale = NoteScale(rawValue: raw),
-              scale != NoteScale.current else { return }
-        NoteScale.current = scale
-
-        // Every metric is baked in at init, so the note is rebuilt rather than
-        // relaid out — cheaper to reason about than mutating a dozen constraints.
-        let size = StickyNoteView.size(for: scale)
-        let old = window.frame
-        note = StickyNoteView(frame: NSRect(origin: .zero, size: size), scale: scale)
-        note.autoresizingMask = [.width, .height]
-        window.contentView = note
+              let scale = NoteScale(rawValue: raw) else { return }
 
         // Resize from the top-left corner, so the note stays where you put it.
+        let size = StickyNoteView.size(for: scale.factor)
+        let old = window.frame
         window.setFrame(NSRect(x: old.minX, y: old.maxY - size.height,
                                width: size.width, height: size.height),
                         display: true)
-        window.saveFrame(usingName: autosaveName)
+        window.invalidateShadow()
+        keepOnScreen()
+        persist()
+    }
 
-        // The fresh rows are empty; fill them now instead of waiting for a tick.
-        // No re-priming of the sampler — refresh consumes the delta already accrued.
-        ticksUntilDiskRead = 0
-        refresh()
+    @objc private func screensChanged() {
+        keepOnScreen()
+        persist()
     }
 
     private func moveToTopLeft() {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         let visible = screen.visibleFrame
-        let size = StickyNoteView.size(for: NoteScale.current)
         window.setFrameOrigin(NSPoint(x: visible.minX + margin,
-                                      y: visible.maxY - size.height - margin))
+                                      y: visible.maxY - window.frame.height - margin))
     }
+
+    /// Nudges the note back if it has ended up somewhere it cannot be grabbed:
+    /// off every display, or with its top tucked under the menu bar.
+    private func keepOnScreen() {
+        let frame = window.frame
+        func overlap(_ screen: NSScreen) -> CGFloat {
+            let shared = screen.visibleFrame.intersection(frame)
+            return shared.isNull ? 0 : shared.width * shared.height
+        }
+
+        var home = NSScreen.main ?? NSScreen.screens.first
+        var best: CGFloat = 0
+        for screen in NSScreen.screens where overlap(screen) > best {
+            best = overlap(screen)
+            home = screen
+        }
+        guard let visible = home?.visibleFrame else { return }
+
+        // Always leave this much of the note reachable.
+        let reach = min(48, frame.width, frame.height)
+        var origin = frame.origin
+        origin.x = min(max(origin.x, visible.minX - frame.width + reach), visible.maxX - reach)
+        origin.y = min(max(origin.y, visible.minY - frame.height + reach),
+                       visible.maxY - frame.height)
+        if origin != frame.origin {
+            window.setFrameOrigin(origin)
+        }
+    }
+
+    // MARK: Readings
 
     @objc func refresh() {
         if ticksUntilDiskRead <= 0 {
-            note.disk.apply(Disk.read())
+            note.disk = Disk.read()
             ticksUntilDiskRead = Int(30 / tick)  // roughly every 30s
         }
         ticksUntilDiskRead -= 1
 
-        if let cpu = cpuSampler.read() { note.cpu.apply(cpu) }
-        note.memory.apply(Memory.read())
+        if let cpu = cpuSampler.read() { note.cpu = cpu }
+        note.memory = Memory.read()
     }
 }
 

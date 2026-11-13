@@ -7,7 +7,7 @@ Spaces, and stays out of the way.
 - Native Cocoa, single Swift file, no dependencies and no frameworks to install
 - Reads straight from the kernel (`statfs`, `host_statistics`) — no shelling out, negligible CPU
 - Universal binary: Apple Silicon and Intel
-- Requires macOS 13 (Ventura) or later
+- Runs on macOS 13 (Ventura) and everything after it
 
 | Row | Shows |
 |---|---|
@@ -55,9 +55,12 @@ route through the UI — Control-clicking the app and choosing Open no longer by
 
 ## Using it
 
-- **Move it** — drag the note anywhere. Its position is remembered between launches.
-- **Resize it** — right-click → Size → Small, Medium, or Large. Everything scales
-  together — text, bars, and padding — and the choice is remembered between launches.
+- **Move it** — drag the note anywhere, starting from any part of it. Its position is
+  remembered between launches, and it is pulled back into view if the display it was on
+  goes away.
+- **Resize it** — hover over the note and drag the handle in its bottom-right corner to
+  any size you like, or right-click → Size → Small, Medium, or Large. Everything scales
+  together — text, bars, and padding — and the size is remembered between launches.
   The note grows from its top-left corner, so it stays where you put it.
 - **Quit it** — hover over the note and click the ✕, or right-click → Quit.
 - **Reset position** — right-click → Reset Position puts it back in the top-left corner.
@@ -74,7 +77,7 @@ VERSION=1.2.0 ./build.sh      # stamp a version into the bundle and zip
 The build produces both `build/Healthbar.app` and a zip ready to attach to a release.
 `main.swift` is the whole program — edit the `Glass` enum at the top to change colors,
 `StickyNoteView.baseSize` for the medium dimensions, the factors in `NoteScale` for the
-size steps, or `tick` in `AppDelegate` to change the refresh rate.
+menu's size presets, or `tick` in `AppDelegate` to change the refresh rate.
 
 ## Releasing
 
